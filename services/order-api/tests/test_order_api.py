@@ -227,6 +227,13 @@ def test_order_api_path_token_cannot_authorize(client: TestClient, auth_env: str
 
 def test_order_api_public_endpoints_accessible_without_admin_auth(client: TestClient, auth_env: str):
     """Verify public endpoints remain accessible without admin authentication."""
+    # /live
+    l_res = client.get("/live")
+    assert l_res.status_code == 200
+    assert l_res.json()["status"] == "alive"
+    assert l_res.json()["service"] == "order-api"
+    assert "timestamp" in l_res.json()
+
     # /health
     h_res = client.get("/health")
     assert h_res.status_code == 200
@@ -244,3 +251,42 @@ def test_order_api_public_endpoints_accessible_without_admin_auth(client: TestCl
     s_res = client.get("/demo/status")
     assert s_res.status_code == 200
     assert s_res.json()["failure_active"] is False
+
+
+def test_order_api_liveness_remains_healthy_during_simulated_failure(client: TestClient, auth_env: str):
+    """
+    Verify platform liveness check (/live) remains HTTP 200 during failure simulation,
+    preventing platform (Render) container restarts while /health returns HTTP 500.
+    """
+    # 1. Healthy baseline: /live returns HTTP 200
+    res_live_init = client.get("/live")
+    assert res_live_init.status_code == 200
+    assert res_live_init.json()["status"] == "alive"
+    assert res_live_init.json()["service"] == "order-api"
+    assert "timestamp" in res_live_init.json()
+
+    # 2. Inject failure
+    headers = {"X-Demo-Token": auth_env}
+    res_fail = client.post("/demo/simulate-failure", headers=headers)
+    assert res_fail.status_code == 200
+    assert res_fail.json()["failure_active"] is True
+
+    # 3. Assert /health returns HTTP 500 (unhealthy application)
+    res_health = client.get("/health")
+    assert res_health.status_code == 500
+    assert res_health.json()["status"] == "unhealthy"
+
+    # 4. Assert /live STILL returns HTTP 200 (platform container remains alive)
+    res_live_during_failure = client.get("/live")
+    assert res_live_during_failure.status_code == 200
+    assert res_live_during_failure.json()["status"] == "alive"
+    assert res_live_during_failure.json()["service"] == "order-api"
+    assert "timestamp" in res_live_during_failure.json()
+
+    # 5. Restore healthy
+    res_restore = client.post("/demo/restore", headers=headers)
+    assert res_restore.status_code == 200
+
+    # 6. Both /health and /live are HTTP 200
+    assert client.get("/health").status_code == 200
+    assert client.get("/live").status_code == 200

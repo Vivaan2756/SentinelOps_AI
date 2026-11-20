@@ -219,6 +219,20 @@ def get_metrics():
     return Response(content=generate_latest(REGISTRY), media_type=CONTENT_TYPE_LATEST)
 
 
+@app.get("/live", tags=["Health"], summary="Platform Liveness Check")
+def get_liveness():
+    """
+    Returns platform liveness status for hosting environment orchestrator (e.g. Render).
+    Always returns HTTP 200 while application server process is running and responding.
+    Publicly accessible without authentication for platform liveness probes.
+    """
+    return {
+        "status": "alive",
+        "service": "order-api",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 @app.get("/health", tags=["Health"], summary="Service Health Check")
 def get_health():
     """
