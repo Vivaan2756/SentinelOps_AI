@@ -1,6 +1,6 @@
 """Application configuration using Pydantic Settings."""
 
-from typing import List
+from typing import List, Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     )
     WORKER_SHUTDOWN_GRACE_PERIOD_SECONDS: float = Field(
         default=10.0, description="Grace period in seconds for worker in-flight task completion during shutdown"
+    )
+
+    # Order API Demo Authentication Secret (Worker Environment Only)
+    ORDER_API_DEMO_ADMIN_TOKEN: Optional[str] = Field(
+        default=None,
+        description="Secret token for authenticating recovery actions against the external Order API demo microservice",
     )
 
     # CORS

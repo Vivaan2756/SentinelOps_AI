@@ -20,10 +20,11 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -223,12 +224,76 @@ class IsolatedHttpRecoveryRunner(ExecutionRunnerInterface):
         trusted_gateway: Optional[str] = None,
         allowed_actions: Optional[Set[str]] = None,
         allow_unauthenticated_probes: bool = False,
+        demo_service_authorizer: Optional[Callable[[str], bool]] = None,
     ):
         self.public_key_registry = public_key_registry or BrokerPublicKeyRegistry()
         self.environment = environment.lower().strip() if environment else None
         self.trusted_gateway = trusted_gateway
         self.allowed_actions = allowed_actions or SUPPORTED_ACTIONS
         self.allow_unauthenticated_probes = allow_unauthenticated_probes
+        self.demo_service_authorizer = demo_service_authorizer
+
+    def is_authorized_demo_service(self, service_id: str) -> bool:
+        """Verify whether service_id is explicitly authorized as an order_api demo service."""
+        if self.demo_service_authorizer is not None:
+            try:
+                return bool(self.demo_service_authorizer(str(service_id)))
+            except Exception as e:
+                logger.warning("Error checking demo service authorization for %s: %s", service_id, e)
+                return False
+        # Fallback to ActionRegistry in-memory registration
+        try:
+            from app.remediation.registry import ActionRegistry
+            return str(service_id) in ActionRegistry._registered_demo_services.get("order_api", set())
+        except Exception:
+            return False
+
+    def _resolve_demo_recovery_headers(
+        self,
+        *,
+        action_id: str,
+        manifest: ExecutionManifest,
+    ) -> Dict[str, str]:
+        """
+        Safely resolve administrative authentication headers for authorized demo recovery actions.
+
+        Enforces:
+        1. Verification probes and unauthenticated probe runners NEVER receive credentials.
+        2. Only action_id == 'restore_order_api_demo' is eligible. Generic recovery and health checks are prohibited.
+        3. Manifest action_id and authorized_path must strictly match 'restore_order_api_demo' and '/demo/restore'.
+        4. Service must be explicitly verified as the authorized 'order_api' demo service.
+        5. Credential is read strictly from fixed environment secret ORDER_API_DEMO_ADMIN_TOKEN (arbitrary env vars prohibited).
+        6. Headers are returned for HTTP dispatch and NEVER logged or stored.
+        """
+        # Guard 1: Probe/verification runner must never receive credentials
+        if self.allow_unauthenticated_probes:
+            return {}
+
+        # Guard 2: Only restore_order_api_demo is eligible
+        if action_id != "restore_order_api_demo":
+            return {}
+
+        # Guard 3: Manifest binding check
+        if manifest.action_id != "restore_order_api_demo" or manifest.authorized_path != "/demo/restore":
+            raise ExecutionAuthorizationError(
+                "Manifest authorization mismatch for demo recovery credential injection."
+            )
+
+        # Guard 4: Service identity binding check
+        if not self.is_authorized_demo_service(manifest.service_id):
+            raise ExecutionAuthorizationError(
+                f"Service '{manifest.service_id}' is not an authorized order_api demo service. Credential injection denied."
+            )
+
+        # Guard 5: Fixed environment variable read (arbitrary env vars prohibited)
+        token = os.environ.get("ORDER_API_DEMO_ADMIN_TOKEN", "").strip()
+        if not token:
+            raise SecurityConfigurationError(
+                "Order API demo admin token (ORDER_API_DEMO_ADMIN_TOKEN) is not configured in worker environment. Recovery cannot be authorized."
+            )
+
+        # Guard 6: Never log or expose token value
+        return {"X-Demo-Token": token}
 
     def is_available(self) -> bool:
         """
@@ -584,8 +649,31 @@ class IsolatedHttpRecoveryRunner(ExecutionRunnerInterface):
                     )
 
                 if action_id in ("execute_http_recovery", "restore_order_api_demo"):
+                    headers: Dict[str, str] = {}
+                    if action_id == "restore_order_api_demo":
+                        try:
+                            headers = self._resolve_demo_recovery_headers(
+                                action_id=action_id,
+                                manifest=manifest,
+                            )
+                        except SecurityConfigurationError as sce:
+                            return ExecutionResult(
+                                exit_code=1,
+                                duration_ms=0,
+                                error_message=str(sce),
+                                error_category="missing_credential",
+                            )
+                        except ExecutionAuthorizationError as eae:
+                            return ExecutionResult(
+                                exit_code=1,
+                                duration_ms=0,
+                                error_message=str(eae),
+                                error_category="authorization_denied",
+                            )
+
                     resp = client.post(
                         resolved_target.url,
+                        headers=headers or None,
                         json=request_payload if request_payload is not None else None,
                     )
                 else:

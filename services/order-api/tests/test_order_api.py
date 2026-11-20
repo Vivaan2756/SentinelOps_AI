@@ -8,6 +8,9 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from service.main import app, demo_state
 
 
+DEFAULT_TEST_TOKEN = "test-order-api-token-2026"
+
+
 @pytest.fixture(autouse=True)
 def reset_demo_state():
     """Ensure demo state is healthy before and after each test."""
@@ -20,6 +23,13 @@ def reset_demo_state():
 def client():
     """Provide TestClient for Order API."""
     return TestClient(app)
+
+
+@pytest.fixture
+def auth_env(monkeypatch):
+    """Configure DEMO_ADMIN_TOKEN environment variable for testing."""
+    monkeypatch.setenv("DEMO_ADMIN_TOKEN", DEFAULT_TEST_TOKEN)
+    return DEFAULT_TEST_TOKEN
 
 
 def test_order_api_healthy_baseline(client: TestClient):
@@ -42,13 +52,18 @@ def test_order_api_healthy_baseline(client: TestClient):
     assert res_create.json()["customer_id"] == "test_user_42"
 
 
-def test_order_api_deterministic_failure_and_recovery(client: TestClient):
-    """Verify deterministic failure mode injection and safe restoration."""
+def test_order_api_deterministic_failure_and_recovery(client: TestClient, auth_env: str):
+    """Verify deterministic failure mode injection and safe restoration with authentication."""
+    headers = {"X-Demo-Token": auth_env}
+
     # 1. Initially healthy
     assert client.get("/health").status_code == 200
 
     # 2. Inject failure
-    res_fail = client.post("/demo/simulate-failure?reason=Simulated+DB+pool+timeout")
+    res_fail = client.post(
+        "/demo/simulate-failure?reason=Simulated+DB+pool+timeout",
+        headers=headers,
+    )
     assert res_fail.status_code == 200
     assert res_fail.json()["failure_active"] is True
 
@@ -60,21 +75,27 @@ def test_order_api_deterministic_failure_and_recovery(client: TestClient):
     orders_500 = client.get("/orders")
     assert orders_500.status_code == 500
 
-    create_500 = client.post("/orders", json={"customer_id": "fail_user", "items_count": 1, "total_amount": 10.0})
+    create_500 = client.post(
+        "/orders",
+        json={"customer_id": "fail_user", "items_count": 1, "total_amount": 10.0},
+    )
     assert create_500.status_code == 500
 
     # 4. Safe recovery
-    res_restore = client.post("/demo/restore")
+    res_restore = client.post("/demo/restore", headers=headers)
     assert res_restore.status_code == 200
     assert res_restore.json()["failure_active"] is False
+    assert res_restore.json()["status"] == "restored"
 
     # 5. Operations restored to normal
     assert client.get("/health").status_code == 200
     assert client.get("/orders").status_code == 200
 
 
-def test_order_api_metrics_endpoint_and_telemetry(client: TestClient):
+def test_order_api_metrics_endpoint_and_telemetry(client: TestClient, auth_env: str):
     """Verify Prometheus metrics exposition and telemetry counters."""
+    headers = {"X-Demo-Token": auth_env}
+
     # Hit healthy endpoint
     client.get("/health")
     client.get("/orders")
@@ -86,7 +107,10 @@ def test_order_api_metrics_endpoint_and_telemetry(client: TestClient):
     assert "order_api_http_request_duration_seconds" in content
 
     # Trigger failure and verify 5xx metrics recorded
-    client.post("/demo/simulate-failure?reason=Timeout+error")
+    client.post(
+        "/demo/simulate-failure?reason=Timeout+error",
+        headers=headers,
+    )
     client.get("/orders")  # produces 500
 
     metrics_res_after = client.get("/metrics")
@@ -95,92 +119,128 @@ def test_order_api_metrics_endpoint_and_telemetry(client: TestClient):
     assert 'status_code="500"' in content_after
 
 
-def test_order_api_repeated_recovery_is_graceful(client: TestClient):
+def test_order_api_repeated_recovery_is_graceful(client: TestClient, auth_env: str):
     """Verify that calling /demo/restore repeatedly handles already healthy states gracefully."""
+    headers = {"X-Demo-Token": auth_env}
+
     # 1. First inject failure
-    client.post("/demo/simulate-failure")
+    client.post("/demo/simulate-failure", headers=headers)
     assert client.get("/health").status_code == 500
 
     # 2. First recovery restores service
-    res1 = client.post("/demo/restore")
+    res1 = client.post("/demo/restore", headers=headers)
     assert res1.status_code == 200
     assert res1.json()["status"] == "restored"
     assert res1.json()["failure_active"] is False
     assert client.get("/health").status_code == 200
 
     # 3. Second recovery on already-healthy service returns 200 OK with already_healthy status
-    res2 = client.post("/demo/restore")
+    res2 = client.post("/demo/restore", headers=headers)
     assert res2.status_code == 200
     assert res2.json()["status"] == "already_healthy"
     assert res2.json()["failure_active"] is False
     assert client.get("/health").status_code == 200
 
 
-def test_order_api_secret_token_authentication(client: TestClient, monkeypatch):
-    """Verify secret token authentication on demo control endpoints when configured."""
-    test_token = "secret-render-token-xyz123"
-    monkeypatch.setenv("DEMO_ADMIN_TOKEN", test_token)
+def test_order_api_missing_configured_token_denies_demo_control(client: TestClient, monkeypatch):
+    """Verify fail-closed behavior: missing DEMO_ADMIN_TOKEN denies demo control endpoints."""
+    monkeypatch.delenv("DEMO_ADMIN_TOKEN", raising=False)
+    monkeypatch.delenv("ORDER_API_SECRET_TOKEN", raising=False)
 
-    # 1. Public health check remains completely accessible without auth
-    health_res = client.get("/health")
-    assert health_res.status_code == 200
-    assert health_res.json()["status"] == "healthy"
+    # Both simulate-failure and restore must return 401
+    res_fail = client.post("/demo/simulate-failure", headers={"X-Demo-Token": "any-token"})
+    assert res_fail.status_code == 401
+    assert "disabled" in res_fail.json()["detail"].lower()
 
-    # 2. Unauthenticated failure injection is rejected with 401
-    fail_no_auth = client.post("/demo/simulate-failure")
-    assert fail_no_auth.status_code == 401
-    assert "Unauthorized" in fail_no_auth.json()["detail"]
+    res_restore = client.post("/demo/restore", headers={"X-Demo-Token": "any-token"})
+    assert res_restore.status_code == 401
+    assert "disabled" in res_restore.json()["detail"].lower()
 
-    # 3. Invalid token failure injection is rejected with 401
-    fail_bad_auth = client.post("/demo/simulate-failure", headers={"X-Demo-Token": "wrong-token"})
-    assert fail_bad_auth.status_code == 401
 
-    # 4. Valid token via X-Demo-Token header succeeds
-    fail_ok_header = client.post(
+def test_order_api_missing_request_token_denies_demo_control(client: TestClient, auth_env: str):
+    """Verify that requests missing credentials header are rejected with 401."""
+    res_fail = client.post("/demo/simulate-failure")
+    assert res_fail.status_code == 401
+    assert "missing" in res_fail.json()["detail"].lower()
+
+    res_restore = client.post("/demo/restore")
+    assert res_restore.status_code == 401
+    assert "missing" in res_restore.json()["detail"].lower()
+
+
+def test_order_api_incorrect_token_denies_demo_control(client: TestClient, auth_env: str):
+    """Verify that incorrect credentials are rejected with 401."""
+    res_fail = client.post("/demo/simulate-failure", headers={"X-Demo-Token": "wrong-secret-token"})
+    assert res_fail.status_code == 401
+    assert "invalid" in res_fail.json()["detail"].lower()
+
+    res_restore = client.post("/demo/restore", headers={"Authorization": "Bearer wrong-secret-token"})
+    assert res_restore.status_code == 401
+    assert "invalid" in res_restore.json()["detail"].lower()
+
+
+def test_order_api_header_authentication_succeeds(client: TestClient, auth_env: str):
+    """Verify that both X-Demo-Token and Bearer Authorization headers succeed."""
+    # 1. X-Demo-Token succeeds
+    res_fail = client.post("/demo/simulate-failure", headers={"X-Demo-Token": auth_env})
+    assert res_fail.status_code == 200
+    assert res_fail.json()["failure_active"] is True
+    assert client.get("/health").status_code == 500
+
+    # 2. Authorization: Bearer <token> succeeds
+    res_restore = client.post("/demo/restore", headers={"Authorization": f"Bearer {auth_env}"})
+    assert res_restore.status_code == 200
+    assert res_restore.json()["failure_active"] is False
+    assert client.get("/health").status_code == 200
+
+
+def test_order_api_query_string_token_cannot_authorize(client: TestClient, auth_env: str):
+    """Verify query-string token parameters cannot authorize demo actions."""
+    res_fail = client.post(f"/demo/simulate-failure?token={auth_env}")
+    assert res_fail.status_code == 401
+
+    res_restore = client.post(f"/demo/restore?token={auth_env}")
+    assert res_restore.status_code == 401
+
+
+def test_order_api_body_token_cannot_authorize(client: TestClient, auth_env: str):
+    """Verify JSON body token parameters cannot authorize demo actions."""
+    res_fail = client.post(
         "/demo/simulate-failure",
-        headers={"X-Demo-Token": test_token},
-        params={"reason": "Testing header auth"},
+        json={"token": auth_env, "reason": "Attack with body token"},
     )
-    assert fail_ok_header.status_code == 200
-    assert fail_ok_header.json()["failure_active"] is True
-    assert client.get("/health").status_code == 500
+    assert res_fail.status_code == 401
 
-    # 5. Unauthenticated restore is rejected with 401
-    restore_no_auth = client.post("/demo/restore")
-    assert restore_no_auth.status_code == 401
-
-    # 6. Valid token via Authorization Bearer header succeeds
-    restore_bearer = client.post(
+    res_restore = client.post(
         "/demo/restore",
-        headers={"Authorization": f"Bearer {test_token}"},
+        json={"token": auth_env},
     )
-    assert restore_bearer.status_code == 200
-    assert restore_bearer.json()["failure_active"] is False
-    assert client.get("/health").status_code == 200
+    assert res_restore.status_code == 401
 
-    # 7. Valid token via query parameter (?token=...)
-    client.post("/demo/simulate-failure", params={"token": test_token})
-    assert client.get("/health").status_code == 500
 
-    restore_query = client.post("/demo/restore", params={"token": test_token})
-    assert restore_query.status_code == 200
-    assert restore_query.json()["failure_active"] is False
-    assert client.get("/health").status_code == 200
+def test_order_api_path_token_cannot_authorize(client: TestClient, auth_env: str):
+    """Verify path-token alias is disabled / cannot authorize."""
+    res = client.post(f"/demo/restore/{auth_env}")
+    # Endpoint was removed / not matched -> 404
+    assert res.status_code == 404
 
-    # 8. Valid token via JSON body ({"token": ...})
-    client.post("/demo/simulate-failure", json={"token": test_token, "reason": "Body test"})
-    assert client.get("/health").status_code == 500
 
-    restore_body = client.post("/demo/restore", json={"token": test_token})
-    assert restore_body.status_code == 200
-    assert restore_body.json()["failure_active"] is False
-    assert client.get("/health").status_code == 200
+def test_order_api_public_endpoints_accessible_without_admin_auth(client: TestClient, auth_env: str):
+    """Verify public endpoints remain accessible without admin authentication."""
+    # /health
+    h_res = client.get("/health")
+    assert h_res.status_code == 200
+    assert h_res.json()["status"] == "healthy"
 
-    # 9. Valid token via path parameter (/demo/restore/{path_token})
-    client.post("/demo/simulate-failure", headers={"X-Demo-Token": test_token})
-    assert client.get("/health").status_code == 500
+    # /metrics
+    m_res = client.get("/metrics")
+    assert m_res.status_code == 200
 
-    restore_path = client.post(f"/demo/restore/{test_token}")
-    assert restore_path.status_code == 200
-    assert restore_path.json()["failure_active"] is False
-    assert client.get("/health").status_code == 200
+    # /orders
+    o_res = client.get("/orders")
+    assert o_res.status_code == 200
+
+    # /demo/status
+    s_res = client.get("/demo/status")
+    assert s_res.status_code == 200
+    assert s_res.json()["failure_active"] is False

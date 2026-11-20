@@ -74,7 +74,7 @@ demo_state = DemoState()
 
 
 def get_configured_token() -> Optional[str]:
-    """Fetch secret administrative token from environment if configured."""
+    """Fetch secret administrative token from environment."""
     tok = (
         os.environ.get("DEMO_ADMIN_TOKEN")
         or os.environ.get("ORDER_API_SECRET_TOKEN")
@@ -83,73 +83,62 @@ def get_configured_token() -> Optional[str]:
     return tok if tok else None
 
 
-class DemoControlRequest(BaseModel):
-    """Optional payload for demo administrative actions."""
+class SimulateFailurePayload(BaseModel):
+    """Optional payload for failure simulation."""
     reason: Optional[str] = None
-    token: Optional[str] = None
-    secret: Optional[str] = None
 
 
-def verify_admin_auth(
-    request: Request,
-    explicit_token: Optional[str] = None,
-    payload: Optional[DemoControlRequest] = None,
-) -> None:
+def verify_admin_auth(request: Request) -> None:
     """
-    Verify administrative authentication token.
-    - If DEMO_ADMIN_TOKEN (or ORDER_API_SECRET_TOKEN) is not configured in environment:
-      permits requests without authentication (local dev / test default).
-    - If configured: strictly requires a matching token.
-    - Accepts token from:
-      1. Header: X-Demo-Token
-      2. Header: Authorization: Bearer <token>
-      3. Query parameter: ?token=... or ?secret=...
-      4. Request body: {"token": "...", ...} or {"secret": "...", ...}
-      5. Explicit route parameter (e.g. path parameter)
-    - Uses constant-time comparison (secrets.compare_digest) to prevent timing attacks.
+    Verify administrative authentication token for controlled demo operations.
+    Enforces strict security requirements:
+    1. Fails closed if DEMO_ADMIN_TOKEN is not configured on the service.
+    2. Accepts credentials strictly via X-Demo-Token or Bearer Authorization headers.
+    3. Rejects query-string, request-body, and URL-path credentials.
+    4. Constant-time token comparison (secrets.compare_digest) to prevent timing attacks.
+    5. Preserves useful error handling without leaking secrets or expected values.
     """
     expected = get_configured_token()
     if not expected:
-        return  # No token configured; allow local dev / test execution
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Administrative demo controls are disabled: admin token not configured on service.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    candidates: List[str] = []
+    # Reject query-string credentials if passed
+    if request.query_params.get("token") or request.query_params.get("secret"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: query-string credentials are not permitted. Use X-Demo-Token or Bearer Authorization header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    candidate: Optional[str] = None
 
     # 1. Header: X-Demo-Token
     x_token = request.headers.get("x-demo-token")
     if x_token:
-        candidates.append(x_token.strip())
+        candidate = x_token.strip()
+    else:
+        # 2. Header: Authorization: Bearer <token>
+        auth_header = request.headers.get("authorization", "").strip()
+        if auth_header.lower().startswith("bearer "):
+            candidate = auth_header[7:].strip()
 
-    # 2. Header: Authorization: Bearer <token>
-    auth_header = request.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        candidates.append(auth_header[7:].strip())
+    if not candidate:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: missing administrative authentication token. Provide X-Demo-Token or Bearer Authorization header.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    # 3. Query params: ?token=... or ?secret=...
-    q_token = request.query_params.get("token") or request.query_params.get("secret")
-    if q_token:
-        candidates.append(q_token.strip())
-
-    # 4. Request body
-    if payload:
-        if payload.token:
-            candidates.append(payload.token.strip())
-        if payload.secret:
-            candidates.append(payload.secret.strip())
-
-    # 5. Explicit route token (e.g. path parameter)
-    if explicit_token:
-        candidates.append(explicit_token.strip())
-
-    # Constant-time comparison
-    for c in candidates:
-        if secrets.compare_digest(c, expected):
-            return
-
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Unauthorized: valid authentication token required for administrative demo controls.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    if not secrets.compare_digest(candidate, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Unauthorized: invalid administrative authentication token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 # Telemetry Middleware: record latency, status codes, and 5xx errors for all requests
@@ -304,16 +293,14 @@ def demo_status():
 async def simulate_failure(
     request: Request,
     reason: Optional[str] = Query(None, description="Optional failure reason description"),
-    token: Optional[str] = Query(None, description="Optional secret token for authentication"),
-    secret: Optional[str] = Query(None, description="Alternative alias for secret token"),
-    payload: Optional[DemoControlRequest] = None,
+    payload: Optional[SimulateFailurePayload] = None,
 ):
     """
     Deterministically enables failure mode (HTTP 500 database timeouts).
     Safe in-memory state toggle; does not mutate system or run shell commands.
-    Requires DEMO_ADMIN_TOKEN when configured in environment.
+    Requires administrative authentication via X-Demo-Token or Bearer Authorization header.
     """
-    verify_admin_auth(request, explicit_token=token or secret, payload=payload)
+    verify_admin_auth(request)
     effective_reason = (payload.reason if payload and payload.reason else reason) or "Database connection pool exhausted; requests timing out after 5000ms"
     demo_state.activate_failure(effective_reason)
     return {
@@ -326,20 +313,15 @@ async def simulate_failure(
 
 
 @app.post("/demo/restore", tags=["Demo Controls"], summary="Restore Normal Healthy Operation")
-async def restore_healthy(
-    request: Request,
-    token: Optional[str] = Query(None, description="Optional secret token for authentication"),
-    secret: Optional[str] = Query(None, description="Alternative alias for secret token"),
-    payload: Optional[DemoControlRequest] = None,
-):
+async def restore_healthy(request: Request):
     """
     Safely restores Order API to normal healthy state.
     Gracefully handles repeated recovery calls:
     - If failure was active, restores healthy state and returns status='restored'.
     - If already healthy, returns status='already_healthy' with HTTP 200 OK.
-    Requires DEMO_ADMIN_TOKEN when configured in environment.
+    Requires administrative authentication via X-Demo-Token or Bearer Authorization header.
     """
-    verify_admin_auth(request, explicit_token=token or secret, payload=payload)
+    verify_admin_auth(request)
     was_active = demo_state.failure_active
     demo_state.restore_healthy()
 
@@ -357,24 +339,6 @@ async def restore_healthy(
         "message": "Order API has been restored to normal healthy operation.",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
-
-
-@app.post(
-    "/demo/restore/{path_token}",
-    tags=["Demo Controls"],
-    summary="Restore Normal Healthy Operation (Path-Token Authenticated)",
-    include_in_schema=False,
-)
-async def restore_healthy_with_path_token(
-    path_token: str,
-    request: Request,
-    payload: Optional[DemoControlRequest] = None,
-):
-    """
-    Path-authenticated alias for /demo/restore.
-    Allows authentication via relative URL path for systems that only support relative path configuration.
-    """
-    return await restore_healthy(request=request, token=path_token, payload=payload)
 
 
 if __name__ == "__main__":

@@ -351,6 +351,23 @@ class DurableExecutionWorker:
         self.shutdown_grace_period = shutdown_grace_period
         self.workspace_id = workspace_id
 
+        # Bind database-backed demo service authorizer to execution runner
+        from app.execution.runners.http_recovery import IsolatedHttpRecoveryRunner
+        if isinstance(self.runner, IsolatedHttpRecoveryRunner) and self.runner.demo_service_authorizer is None:
+            def _is_db_demo_service(service_id: str) -> bool:
+                try:
+                    with self._get_db() as db_sess:
+                        svc = db_sess.query(Service).filter(Service.id == service_id).first()
+                        if not svc:
+                            return False
+                        if getattr(svc, "demo_integration", None) == "order_api":
+                            return True
+                        from app.remediation.registry import ActionRegistry
+                        return ActionRegistry.is_demo_service(svc, "order_api", db=db_sess)
+                except Exception:
+                    return False
+            self.runner.demo_service_authorizer = _is_db_demo_service
+
         # Targeted single-execution & one-shot configuration (Stage 3B)
         self.target_execution_id = (
             target_execution_id
