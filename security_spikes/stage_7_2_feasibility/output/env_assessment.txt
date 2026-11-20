@@ -1,0 +1,59 @@
+=== SENTINELOPS ENVIRONMENT ASSESSMENT ===
+Timestamp: 2026-11-08T12:22:56Z
+----------------------------------------
+[1] OS / Distribution:
+PRETTY_NAME="Ubuntu 26.04.1 LTS"
+NAME="Ubuntu"
+VERSION="26.04.1 LTS (Resolute Raccoon)"
+ID=ubuntu
+
+[2] Kernel Version:
+6.18.54.1-microsoft-standard-WSL2 #1 SMP PREEMPT_DYNAMIC Tue Oct  6 19:13:07 UTC 2026 x86_64
+
+[3] Host Environment Classification:
+CLASSIFICATION: WSL2 (Windows Subsystem for Linux)
+WARNING: WSL2 environment detected. Experiments here DO NOT satisfy dedicated Ubuntu 22.04 LTS host acceptance criteria.
+
+[4] Docker Engine:
+
+The command 'docker' could not be found in this WSL 2 distro.
+We recommend to activate the WSL integration in Docker Desktop settings.
+
+For details about using Docker Desktop with WSL 2, visit:
+
+https://docs.docker.com/go/wsl2/
+
+Docker CLI found but daemon unreachable.
+
+Docker Info Security Profile:
+
+[5] Available Capabilities:
+Current: =
+Bounding set =cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,cap_checkpoint_restore
+Current IAB:
+Securebits: 00/0x0/1'b0 (no-new-privs=0)
+ secure-no-suid-fixup: no (unlocked)
+uid=1000(patelvivaan) euid=1000(patelvivaan)
+
+[6] iptables & ip6tables:
+iptables not installed.
+ip6tables not installed.
+
+[7] nftables:
+nftables (nft) not installed.
+
+[8] Netfilter Kernel Modules:
+br_netfilter           28672  0
+bridge                286720  1 br_netfilter
+stp                    12288  1 bridge
+llc                    12288  2 bridge,stp
+ip_tables              28672  0
+
+br_netfilter sysctl status:
+
+[9] Network & Mount Namespace Support:
+lrwxrwxrwx 1 patelvivaan patelvivaan 0 Nov  8 12:22 mnt -> mnt:[4026532210]
+lrwxrwxrwx 1 patelvivaan patelvivaan 0 Nov  8 12:22 net -> net:[4026531833]
+lrwxrwxrwx 1 patelvivaan patelvivaan 0 Nov  8 12:22 pid -> pid:[4026532212]
+lrwxrwxrwx 1 patelvivaan patelvivaan 0 Nov  8 12:22 pid_for_children -> pid:[4026532212]
+lrwxrwxrwx 1 patelvivaan patelvivaan 0 Nov  8 12:22 user -> user:[4026531837]

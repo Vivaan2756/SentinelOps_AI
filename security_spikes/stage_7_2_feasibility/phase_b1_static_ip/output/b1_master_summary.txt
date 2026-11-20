@@ -1,0 +1,13 @@
+========================================================================
+    SENTINELOPS PHASE B1.6 STATIC-IP FIREWALL FEASIBILITY SUITE (V4)
+========================================================================
+Start Time: 2026-11-09T10:55:23Z
+
+>>> STEP 0: CHECKING TEST ENVIRONMENT & PREREQUISITES <<<
+
+[PREREQUISITE FAILURE] Genuine Ubuntu 22.04 LTS Linux host running Docker Engine is UNAVAILABLE.
+Per strict safety rules:
+  - Experiments are NOT executed on non-qualifying environments.
+  - Test harness is statically verified, but live kernel tests were SKIPPED.
+  - Exit code 2 returned to prevent automated systems from mistaking skipped runs for success.
+Summary completed with PREREQUISITE_FAILED status.

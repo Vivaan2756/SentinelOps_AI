@@ -1,0 +1,137 @@
+# ==============================================================================
+# SentinelOps AI - Direct Unprivileged HTTP Recovery Topology (Option C / Stage 3)
+# ==============================================================================
+# Architecture Baseline: Option C Direct HTTP Runner
+# Active Topology:
+#   - Windows Host / Control Plane:
+#       * Backend Control Plane (FastAPI): 127.0.0.1:8000
+#       * Monitored Workload (Order API):  127.0.0.1:8001
+#       * Authoritative Database:          127.0.0.1:5432 (sentinelops_dev)
+#   - Worker (sentinelops-worker):
+#       * UID/GID 1000: dedicated unprivileged user
+#       * ZERO /var/run/docker.sock mount (legacy broker permanently retired)
+#       * ZERO privileged socket access or daemon capabilities
+#       * Dedicated restricted database role (sentinelops_worker)
+#       * Dispatches recovery actions via in-process IsolatedHttpRecoveryRunner
+#       * Persistent SQLite OperationRegistry and SOJ1 append-only journal
+#       * Post-execution verification enabled (fail-closed)
+# ==============================================================================
+
+services:
+  # ============================================================================
+  # 1. Durable Execution Worker (Option C Direct Unprivileged HTTP Recovery)
+  # - Runs as dedicated unprivileged user (UID 1000, GID 1000)
+  # - ZERO access to /var/run/docker.sock
+  # - ZERO broker IPC dependency (legacy broker retired)
+  # - Dispatches through IsolatedHttpRecoveryRunner with strict Ed25519 manifest verification
+  # - Mounts persistent volumes for OperationRegistry (SQLite) and OperationJournal (SOJ1)
+  # - Connects to host PostgreSQL via restricted sentinelops_worker role
+  # - Mandatory post-execution verification enabled (fail-closed)
+  # - Exposes ZERO public ports
+  # ============================================================================
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sentinelops-worker
+    restart: unless-stopped
+    user: "1000:1000"
+    command: ["python", "-m", "app.execution.worker"]
+    environment:
+      - ENVIRONMENT=development
+      - ENABLE_VERIFICATION=true
+      - SENTINELOPS_RUNNER_TYPE=http_recovery
+      - WORKER_DATABASE_URL=${WORKER_DATABASE_URL:-postgresql://sentinelops_worker:${WORKER_DB_PASSWORD:-}@host.docker.internal:5432/sentinelops_dev}
+      - OPERATION_REGISTRY_PATH=/var/lib/sentinelops/registry/operation_registry.db
+      - OPERATION_JOURNAL_DIR=/var/lib/sentinelops/journal
+      # FINDING-2.1-03: SENTINELOPS_MANIFEST_PRIVATE_KEY is strictly excluded from worker environment
+      # Stage 3.1: Administrative DATABASE_URL is strictly excluded; worker receives only WORKER_DATABASE_URL
+    volumes:
+      # Persistent storage volumes for crash durability and three-way reconciliation
+      - sentinelops_registry_data:/var/lib/sentinelops/registry:rw
+      - sentinelops_journal_data:/var/lib/sentinelops/journal:rw
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sentinelops-bridge
+
+  # ============================================================================
+  # Optional Standalone Services (Disabled by Default via Compose Profiles)
+  # - Prevents duplicate PostgreSQL database or port collisions during host-backed execution
+  # ============================================================================
+  backend:
+    profiles: ["container-full-stack"]
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: sentinelops-backend
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL_CONTAINER}
+      - ENVIRONMENT=development
+      - PORT=8000
+    ports:
+      - "8000:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - sentinelops-bridge
+
+  order-api:
+    profiles: ["container-full-stack"]
+    build:
+      context: services/order-api
+      dockerfile: Dockerfile
+    container_name: sentinelops-order-api
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    networks:
+      - sentinelops-bridge
+
+  db:
+    profiles: ["container-isolated-db"]
+    image: postgres:16-alpine
+    container_name: sentinelops-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sentinelops_dev
+      POSTGRES_USER: sentinelops_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      # AUDIT-3.1-03 & Stage 3.3: Propagate deployment secret to database bootstrap script (validated fail-closed in 02_create_worker_role.sql)
+      WORKER_DB_PASSWORD: ${WORKER_DB_PASSWORD:-}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/sql/02_create_worker_role.sql:/docker-entrypoint-initdb.d/02_create_worker_role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinelops_user -d sentinelops_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - sentinelops-bridge
+
+# ==============================================================================
+# Persistent Named Volumes
+# ==============================================================================
+volumes:
+  # Persistent SQLite Operation Registry storage across worker restarts
+  sentinelops_registry_data:
+    name: sentinelops_registry_data
+  # Persistent append-only SOJ1 Operation Journal storage across worker restarts
+  sentinelops_journal_data:
+    name: sentinelops_journal_data
+  # Optional volume for isolated container DB profile only
+  postgres_data:
+    name: sentinelops_postgres_data
+
+# ==============================================================================
+# Bridge Network for Container-to-Host Gateway Routing
+# ==============================================================================
+networks:
+  sentinelops-bridge:
+    name: sentinelops-bridge
+    driver: bridge

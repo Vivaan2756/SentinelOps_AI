@@ -1,0 +1,117 @@
+{
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "defaultErrnoRet": 1,
+  "archMap": [
+    {
+      "architecture": "SCMP_ARCH_X86_64",
+      "subArchitectures": [
+        "SCMP_ARCH_X86",
+        "SCMP_ARCH_X32"
+      ]
+    }
+  ],
+  "syscalls": [
+    {
+      "names": [
+        "read",
+        "write",
+        "openat",
+        "close",
+        "newfstatat",
+        "fstat",
+        "lseek",
+        "mmap",
+        "mprotect",
+        "munmap",
+        "brk",
+        "rt_sigaction",
+        "rt_sigprocmask",
+        "rt_sigreturn",
+        "ioctl",
+        "access",
+        "pipe2",
+        "getpid",
+        "gettid",
+        "getuid",
+        "geteuid",
+        "getgid",
+        "getegid",
+        "socket",
+        "connect",
+        "sendto",
+        "recvfrom",
+        "sendmsg",
+        "recvmsg",
+        "shutdown",
+        "bind",
+        "getsockname",
+        "getpeername",
+        "setsockopt",
+        "getsockopt",
+        "nanosleep",
+        "clock_nanosleep",
+        "clock_gettime",
+        "gettimeofday",
+        "getrandom",
+        "futex",
+        "epoll_create1",
+        "epoll_ctl",
+        "epoll_wait",
+        "epoll_pwait",
+        "madvise",
+        "getdents64",
+        "readlink",
+        "readlinkat",
+        "getcwd",
+        "sysinfo",
+        "uname",
+        "prlimit64",
+        "set_robust_list",
+        "rseq",
+        "exit_group",
+        "exit"
+      ],
+      "action": "SCMP_ACT_ALLOW"
+    },
+    {
+      "names": [
+        "clone",
+        "clone3"
+      ],
+      "action": "SCMP_ACT_ALLOW",
+      "args": [],
+      "comment": "Permit threading without process branching"
+    },
+    {
+      "names": [
+        "execve",
+        "execveat",
+        "fork",
+        "vfork",
+        "ptrace",
+        "bpf",
+        "setns",
+        "unshare",
+        "chroot",
+        "pivot_root",
+        "mount",
+        "umount2",
+        "reboot",
+        "kexec_load",
+        "init_module",
+        "finit_module",
+        "delete_module",
+        "capset",
+        "iopl",
+        "ioperm",
+        "perf_event_open",
+        "syslog",
+        "kill",
+        "tkill",
+        "tgkill"
+      ],
+      "action": "SCMP_ACT_KILL_PROCESS",
+      "comment": "Strictly kill process immediately on dangerous or privileged syscalls"
+    }
+  ]
+}

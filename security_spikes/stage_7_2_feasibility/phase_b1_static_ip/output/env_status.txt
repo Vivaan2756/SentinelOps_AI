@@ -1,0 +1,23 @@
+=== SENTINELOPS PHASE B1.6: ENVIRONMENT ASSESSMENT ===
+Timestamp: 2026-11-09T11:19:59Z
+HOST TYPE: WSL2 (Windows Subsystem for Linux)
+DOCKER ENGINE: CLI present, but Daemon unreachable or stopped.
+IPTABLES: Not installed.
+IP6TABLES: Not installed.
+HOST KERNEL IPV6: Active (/proc/net/if_inet6 present)
+CONNTRACK: Not installed (required for safe conntrack table flushing on IP reuse).
+EBTABLES: Not installed (L2 bridge filtering relies on kernel br_netfilter sysctls).
+BR_NETFILTER MODULE: Loaded
+SYSCTL bridge-nf-call-iptables: 1 (Enabled)
+SYSCTL bridge-nf-call-ip6tables: 1 (Enabled)
+
+=== ENVIRONMENT ASSESSMENT SUMMARY ===
+VERDICT: INSUFFICIENT for authoritative live kernel execution.
+Missing Prerequisites (6):
+  - Host is WSL2 (requires native Ubuntu 22.04 LTS host)
+  - Docker daemon unreachable or stopped
+  - iptables not installed
+  - ip6tables not installed
+  - IPv6 active in kernel but ip6tables CLI missing (fails closed)
+  - conntrack CLI utility not installed
+Per strict safety rules: Experiments will abort to prevent unverified or unsafe test state (exit code 2: PREREQUISITE_FAILED).
